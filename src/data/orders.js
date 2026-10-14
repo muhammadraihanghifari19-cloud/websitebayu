@@ -26,7 +26,16 @@ export function pickOrderFor(archetype, isUnlocked) {
 
 /** Greeting dialogue using the archetype's own voice + the chosen order. */
 export function buildGreeting(archetype, recipe, emp, cust) {
-  const greet = pick(archetype.greet);
+  // Greet lines use a {pesanan} placeholder so the spoken order ALWAYS matches
+  // the recipe that will actually be cooked (fixes order/dish mismatch).
+  let greet = pick(archetype.greet);
+  const orderName = recipe.name.toLowerCase();
+  if (greet.includes('{pesanan}')) {
+    greet = greet.replaceAll('{pesanan}', orderName);
+  } else {
+    // Safety net for any legacy line without a placeholder.
+    greet = `${greet} (${recipe.name} satu ya, Mas.)`;
+  }
   const lines = [
     {
       speaker: 'Karyawan',

@@ -22,9 +22,9 @@ export const ARCHETYPES = {
     look: { skinKey: 'a', shirtKey: 'blue', hairKey: 'black' },
     times: ['pagi', 'sore'],
     greet: [
-      'Mas, buru-buru nih mau ke sekolah! Teh manis satu cepet ya!',
-      'Cepet ya Mas, udah telat nih. Pesen gorengan dong.',
-      'Mas, yang cepet aja, bentar lagi bel masuk!'
+      'Mas, buru-buru nih mau ke sekolah! {pesanan} satu cepet ya!',
+      'Cepet ya Mas, udah telat nih. Pesen {pesanan} dong.',
+      'Mas, {pesanan} satu, yang cepet aja, bentar lagi bel masuk!'
     ],
     happy: [
       'Wah cepet! Makasih Mas, aku lanjut ya!',
@@ -50,16 +50,16 @@ export const ARCHETYPES = {
     look: { skinKey: 'b', shirtKey: 'green', hairKey: 'black' },
     times: ['pagi', 'siang', 'malam'],
     greet: [
-      'Kopi hitam satu ya, Mas. Yang pahit, biar melek.',
-      'Seperti biasa Mas, kopi hitam. Santai aja nggak buru-buru.',
-      'Kopi dulu Mas, sambil baca koran.'
+      '{pesanan} satu ya, Mas. Santai aja nggak buru-buru.',
+      'Seperti biasa Mas, {pesanan}. Sambil baca koran enak nih.',
+      'Mas, bikinin {pesanan} dulu ya, buat nemenin ngobrol.'
     ],
     happy: [
-      'Nah, ini baru kopi. Mantap betul Mas.',
-      'Pas di lidah. Besok ngopi sini lagi ah.'
+      'Nah, ini baru mantap. Betul betul Mas.',
+      'Pas di lidah. Besok mampir sini lagi ah.'
     ],
     angry: [
-      'Aduh Mas, kopinya kurang pas nih.',
+      'Aduh Mas, ini kurang pas nih rasanya.',
       'Hmm, lain kali lebih diperhatikan ya Mas.'
     ],
     story: [
@@ -80,9 +80,9 @@ export const ARCHETYPES = {
     look: { skinKey: 'c', shirtKey: 'red', hairKey: 'brown' },
     times: ['siang', 'sore', 'malam'],
     greet: [
-      'Istirahat dulu Mas, kopi susu satu. Capek narik seharian.',
-      'Kopi susu ya Mas, buat ganjel sebelum narik lagi.',
-      'Mas, yang anget-anget. Kopi susu deh.'
+      'Istirahat dulu Mas, {pesanan} satu. Capek narik seharian.',
+      '{pesanan} ya Mas, buat ganjel sebelum narik lagi.',
+      'Mas, yang anget-anget. {pesanan} deh.'
     ],
     happy: [
       'Nikmat Mas, tenaga balik lagi nih!',
@@ -110,9 +110,9 @@ export const ARCHETYPES = {
     look: { skinKey: 'a', shirtKey: 'yellow', hairKey: 'brown' },
     times: ['pagi', 'siang', 'sore'],
     greet: [
-      'Eh Mas! Teh manis ya. Eh denger-denger warung sebelah tutup lho.',
-      'Mas, gorengan masih anget? Sekalian teh manisnya ya.',
-      'Assalamualaikum Mas, pesen teh manis. Rame terus nih warungnya.'
+      'Eh Mas! {pesanan} ya. Eh denger-denger warung sebelah tutup lho.',
+      'Mas, pesen {pesanan} ya. Rame terus nih warungnya.',
+      'Assalamualaikum Mas, {pesanan} satu. Betah nih ngobrol di sini.'
     ],
     happy: [
       'Enak Mas! Nanti aku ceritain ke yang lain ya, biar rame.',
@@ -139,9 +139,9 @@ export const ARCHETYPES = {
     look: { skinKey: 'c', shirtKey: 'orange', hairKey: 'black' },
     times: ['siang', 'sore'],
     greet: [
-      'Bang, jajan gorengan dong! Yang anget ya.',
-      'Bang, teh manis sama gorengan. Uang jajan nih!',
-      'Beli gorengan bang, laper abis main bola.'
+      'Bang, jajan {pesanan} dong! Yang anget ya.',
+      'Bang, {pesanan} satu. Uang jajan nih!',
+      'Beli {pesanan} bang, laper abis main bola.'
     ],
     happy: [
       'Hehe enak bang! Besok jajan sini lagi!',
@@ -169,11 +169,11 @@ export const ARCHETYPES = {
     times: ['pagi'],
     special: true,
     greet: [
-      'Selamat pagi! Kopi hitam satu ya, sebelum apel pagi.',
-      'Pagi Mas, kopi hitam. Dinas pagi butuh energi nih.'
+      'Selamat pagi! {pesanan} satu ya, sebelum apel pagi.',
+      'Pagi Mas, {pesanan}. Dinas pagi butuh energi nih.'
     ],
     happy: [
-      'Mantap, kopinya bikin semangat. Terima kasih, Mas!',
+      'Mantap, bikin semangat. Terima kasih, Mas!',
       'Enak. Warung aman, saya patroli dulu ya.'
     ],
     angry: [
@@ -197,8 +197,8 @@ export const ARCHETYPES = {
     times: ['sore', 'malam'],
     special: true,
     greet: [
-      'Mas, kita nongkrong di sini ya! Kopi susu sama Indomie-nya mantap!',
-      'Rame-rame nih Mas, pesen kopi susu dulu buat ngobrol.'
+      'Mas, kita nongkrong di sini ya! {pesanan}-nya satu dulu ya!',
+      'Rame-rame nih Mas, pesen {pesanan} dulu buat ngobrol.'
     ],
     happy: [
       'Wih enak Mas! Betah nih nongkrong di sini.',
