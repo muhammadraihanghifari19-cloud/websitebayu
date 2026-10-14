@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#2b1d12" />
+    <title>Warkop Warbis</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #1a110a;
+        font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: none;
+      }
+
+      #app {
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      #game-container {
+        width: 100%;
+        height: 100%;
+      }
+
+      canvas {
+        display: block;
+      }
+
+      /* Simple loading splash shown before Phaser boots */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: radial-gradient(circle at 50% 35%, #3b2817, #1a110a 70%);
+        color: #f3d9a8;
+        z-index: 10;
+        transition: opacity 0.4s ease;
+      }
+
+      #boot-splash.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #boot-splash h1 {
+        font-size: clamp(28px, 6vw, 54px);
+        letter-spacing: 2px;
+        text-shadow: 0 3px 0 #6b4423, 0 6px 12px rgba(0, 0, 0, 0.5);
+      }
+
+      #boot-splash p {
+        font-size: clamp(13px, 2.6vw, 18px);
+        opacity: 0.8;
+      }
+
+      .cup {
+        width: 46px;
+        height: 46px;
+        border: 5px solid #f3d9a8;
+        border-radius: 50%;
+        border-top-color: transparent;
+        animation: spin 0.9s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="game-container"></div>
+    </div>
+
+    <div id="boot-splash">
+      <h1>☕ Warkop Warbis</h1>
+      <div class="cup"></div>
+      <p>Menyeduh kopi...</p>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
