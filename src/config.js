@@ -33,6 +33,39 @@ export const COLORS = {
 };
 
 /**
+ * UI palette — brighter, higher-contrast colors for overlays/HUD so the
+ * interface reads clearly against the warm brown world. Hex numbers.
+ */
+export const UI = {
+  panel: 0x241812,       // dark warm panel bg
+  panelSoft: 0x3a2616,   // raised card
+  stroke: 0xf3d9a8,      // cream border
+  accent: 0xf2b23a,      // primary action (amber)
+  accentDark: 0xd98f1f,
+  good: 0x4fcf6a,        // success / affordable
+  goodDark: 0x2f9e49,
+  bad: 0xe25a4e,         // error / can't afford
+  badDark: 0xb23a30,
+  info: 0x4f9fe0,        // info / neutral action
+  infoDark: 0x2f6fb0,
+  textLight: 0xfdf6e8,
+  textDim: 0xcdb89a,
+  textInk: 0x241812,
+  star: 0xffd94f
+};
+
+/** Hex-string versions for Phaser text color props. */
+export const UITEXT = {
+  light: '#fdf6e8',
+  dim: '#cdb89a',
+  ink: '#241812',
+  accent: '#f2b23a',
+  good: '#8ef08a',
+  bad: '#ff8a7e',
+  star: '#ffd94f'
+};
+
+/**
  * Cozy pixel-art palette (hex strings for the PixelArt engine).
  * A deliberately limited, warm set of hues with 2-3 shades each (dark / base /
  * light) so every sprite shares the same lighting and reads as one cohesive

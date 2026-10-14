@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { GAME_WIDTH, GAME_HEIGHT } from './config.js';
 import BootScene from './scenes/BootScene.js';
 import WarkopScene from './scenes/WarkopScene.js';
+import CookingScene from './scenes/CookingScene.js';
 
 const config = {
   type: Phaser.AUTO,
@@ -18,7 +19,7 @@ const config = {
   render: {
     antialias: true
   },
-  scene: [BootScene, WarkopScene]
+  scene: [BootScene, WarkopScene, CookingScene]
 };
 
 const game = new Phaser.Game(config);

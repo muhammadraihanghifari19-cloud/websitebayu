@@ -3,10 +3,27 @@ import { GAME_WIDTH, GAME_HEIGHT, COLORS, PX } from '../config.js';
 import Character from '../objects/Character.js';
 import DialogueBox from '../objects/DialogueBox.js';
 import HUD from '../objects/HUD.js';
-import UpgradePanel from '../objects/UpgradePanel.js';
 import PixelArt from '../engine/PixelArt.js';
-import { randomOrder, randomLook, buildOrderDialogue, buildPaymentDialogue, UPGRADES } from '../data/orders.js';
-import { loadProgress, saveProgress } from '../data/storage.js';
+
+import GameState from '../systems/GameState.js';
+import TimeWeather from '../systems/TimeWeather.js';
+import MissionSystem from '../systems/MissionSystem.js';
+
+import { getRecipe, qualityFromScore } from '../data/recipes.js';
+import { ARCHETYPES, pickArchetypeForTime, pick } from '../data/customers.js';
+import { pickOrderFor, buildGreeting, buildReaction } from '../data/orders.js';
+import { INGREDIENTS } from '../data/ingredients.js';
+import { findShopItem } from '../data/shop.js';
+
+import { label, button } from '../ui/UIKit.js';
+import ShopOverlay from '../ui/ShopOverlay.js';
+import InventoryOverlay from '../ui/InventoryOverlay.js';
+import MissionOverlay from '../ui/MissionOverlay.js';
+import CollectionOverlay from '../ui/CollectionOverlay.js';
+import SettingsOverlay from '../ui/SettingsOverlay.js';
+import ModeOverlay from '../ui/ModeOverlay.js';
+import ResultOverlay from '../ui/ResultOverlay.js';
+import { UITEXT } from '../config.js';
 
 /**
  * WarkopScene
@@ -24,47 +41,79 @@ export default class WarkopScene extends Phaser.Scene {
   }
 
   create() {
-    this.buildTextures();
+    // --- Core systems (single source of truth) ---
+    this.gs = new GameState();                 // persistent progress (v2 + migrated v1)
+    this.timeWeather = new TimeWeather(this);  // simulated clock + weather
+    this.missions = new MissionSystem(this.gs);
 
+    // --- World ---
+    this.buildTextures();
     this.buildEnvironment();
     this.buildProps();
     this.buildCharacters();
 
+    // Apply already-owned upgrades/decorations from the save immediately.
+    this.applyOwnedUpgrades();
+
+    // --- UI ---
     this.dialogue = new DialogueBox(this);
     this.hud = new HUD(this);
-    this.showTitleBanner();
+    this.hud.setCoins(this.gs.coins);
+    this.buildTopBars();     // time/weather + reputation readouts
+    this.buildToolbar();     // shop/inventory/missions/collection/mode/settings buttons
+    this.buildOverlays();
 
-    // --- Load saved progress (coins + purchased upgrades) ---
-    const saved = loadProgress();
+    // Keep HUD coins in sync with state changes anywhere.
+    this.gs.on('coins', (c) => this.hud.setCoins(c));
+    this.gs.on('reputation', () => this.refreshTopBars());
 
-    // --- Game state for the service loop ---
-    this.coins = saved ? saved.coins : 0;
-    this.hud.setCoins(this.coins);
+    // --- Service loop state ---
+    this.phase = 'idle';
+    this.currentOrder = null;   // recipe object
+    this.currentRecipeId = null;
+    this.currentArchetype = null;
+    this.customer = null;
+    this.cooked = null;         // { score, quality } from the mini-game
+    this.spawnDelayBase = 1400;
 
-    // --- Upgrades ---
-    this.purchased = saved ? saved.purchased : {}; // id -> true once bought
-    this.upgradePanel = new UpgradePanel(this, UPGRADES.stove).setContext({
-      getCoins: () => this.coins,
-      isPurchased: (item) => !!this.purchased[item.id],
-      onBuy: (item) => this.buyUpgrade(item)
-    });
+    this.mode = 'harian';       // 'harian' | 'tantangan'
+    this.challenge = null;      // { endsAt, served, target } when in challenge
 
-    // Reflect already-purchased upgrades in the world immediately.
-    if (this.purchased.stove) this.applyStoveUpgrade(true);
-    this.phase = 'idle';         // idle | arriving | ordering | preparing | serving | paying | leaving
-    this.currentOrder = null;    // the active order object
-    this.customer = null;        // the current customer Character
-
-    // Advance dialogue on any pointer tap/click anywhere on screen.
+    // Advance built-in dialogue on tap/click (unchanged behaviour).
     this.input.on('pointerdown', () => {
-      if (this.dialogue.isActive) {
-        this.dialogue.advance();
-      }
+      if (this.dialogue.isActive) this.dialogue.advance();
     });
 
-    // Start the first service cycle.
+    // Start the simulated time and the first service cycle.
+    this.timeWeather.start();
+    this.timeWeather.on('phase', (p) => this.onPhaseChange(p));
+    this.timeWeather.on('weather', (w) => this.onWeatherChange(w));
+    this.refreshTopBars();
+    this.applyPhaseTint(this.timeWeather.phase.id);
+
     this.hud.setStatus('Menunggu pelanggan...', '🙂');
     this.time.delayedCall(1200, () => this.startCycle());
+  }
+
+  update(time, delta) {
+    if (this.timeWeather) this.timeWeather.update(delta);
+    this.updatePatience(delta);
+    this.updateChallenge();
+    this.syncToolbarWithDialogue();
+  }
+
+  /** Hide the toolbar while the dialogue box or an overlay is on screen. */
+  syncToolbarWithDialogue() {
+    if (!this.toolbarBtns) return;
+    const anyOverlayOpen = [this.shopOverlay, this.inventoryOverlay, this.missionOverlay,
+      this.collectionOverlay, this.settingsOverlay, this.modeOverlay, this.resultOverlay]
+      .some((o) => o && o.isOpen);
+    const dialogueUp = this.dialogue && this.dialogue.isActive;
+    const cookingUp = this.scene.isActive('CookingScene');
+    const shouldHide = dialogueUp || cookingUp || anyOverlayOpen;
+    if (shouldHide === this._toolbarHidden) return;
+    this._toolbarHidden = shouldHide;
+    this.setToolbarVisible(!shouldHide);
   }
 
   // ===========================================================================
@@ -458,33 +507,289 @@ export default class WarkopScene extends Phaser.Scene {
   //     -> payment -> customerLeaves -> startCycle
   // ===========================================================================
 
-  /** Spawn a fresh customer off-screen on the right with a random look. */
-  spawnCustomer() {
-    const look = randomLook();
+  // ===========================================================================
+  // Top bars: time/weather (center) + reputation (right)
+  // ===========================================================================
+  buildTopBars() {
+    // Time + weather chip on its own pill at top-left, under the coin counter,
+    // so it never collides with the center sign.
+    const chipBg = this.add.graphics().setDepth(954);
+    chipBg.fillStyle(0x241812, 0.78);
+    chipBg.fillRoundedRect(24, 84, 360, 40, 12);
+    chipBg.lineStyle(2, 0xf3d9a8, 0.6);
+    chipBg.strokeRoundedRect(24, 84, 360, 40, 12);
+    this.timeChip = label(this, 40, 104, '', { size: 16, color: UITEXT.light, origin: [0, 0.5] });
+    this.timeChip.setDepth(955);
+
+    // Reputation chip (top-right, with its own pill)
+    const repBg = this.add.graphics().setDepth(954);
+    repBg.fillStyle(0x241812, 0.78);
+    repBg.fillRoundedRect(GAME_WIDTH - 220, 20, 196, 40, 12);
+    repBg.lineStyle(2, 0xf2c14e, 0.7);
+    repBg.strokeRoundedRect(GAME_WIDTH - 220, 20, 196, 40, 12);
+    this.repChip = label(this, GAME_WIDTH - 36, 40, '', { size: 17, bold: true, color: UITEXT.star, origin: [1, 0.5] });
+    this.repChip.setDepth(955);
+  }
+
+  refreshTopBars() {
+    if (!this.timeChip) return;
+    const t = this.timeWeather.phase;
+    const w = this.timeWeather.weather;
+    const wk = this.timeWeather.weekend ? ' • Akhir Pekan' : '';
+    this.timeChip.setText(`${t.icon} ${t.name}  ${w.icon} ${w.name}  • Hari ${this.timeWeather.dayCount}${wk}`);
+    this.repChip.setText(`⭐ Reputasi ${this.gs.reputation}`);
+  }
+
+  dayInfo() { return `${this.timeWeather.phase.name} (Hari ${this.timeWeather.dayCount})`; }
+
+  // ===========================================================================
+  // Toolbar of overlay-opening buttons (bottom-left column of chips)
+  // ===========================================================================
+  buildToolbar() {
+    const defs = [
+      { icon: '🏪', label: 'Toko', open: () => this.shopOverlay.open() },
+      { icon: '📦', label: 'Stok', open: () => this.inventoryOverlay.open() },
+      { icon: '🎯', label: 'Misi', open: () => this.missionOverlay.open() },
+      { icon: '📔', label: 'Album', open: () => this.collectionOverlay.open() },
+      { icon: '🎮', label: 'Mode', open: () => this.modeOverlay.open() },
+      { icon: '⚙️', label: 'Set', open: () => this.settingsOverlay.open() }
+    ];
+    // Vertical column on the right edge, below the menu board, clear of both
+    // the center sign and the bottom dialogue box.
+    const x = GAME_WIDTH - 78;
+    const startY = 360;
+    this.toolbarBtns = [];
+    defs.forEach((d, i) => {
+      const b = button(this, x, startY + i * 52, d.label, d.open, {
+        w: 130, h: 44, size: 15, icon: d.icon, color: 0x3a2616, textColor: UITEXT.light
+      });
+      b.container.setDepth(955); b.zone.setDepth(956);
+      this.toolbarBtns.push(b);
+    });
+  }
+
+  setToolbarVisible(on) {
+    this.toolbarBtns.forEach((b) => { b.container.setVisible(on); b.zone.setVisible(on); if (on) b.setEnabled(true); else b.zone.disableInteractive(); });
+  }
+
+  buildOverlays() {
+    this.shopOverlay = new ShopOverlay(this, {
+      gs: this.gs,
+      isOwned: (item) => this.isItemOwned(item),
+      onBuy: (item) => this.buyShopItem(item)
+    });
+    this.inventoryOverlay = new InventoryOverlay(this, {
+      gs: this.gs,
+      onRestock: (ing) => this.restock(ing)
+    });
+    this.missionOverlay = new MissionOverlay(this, {
+      missions: this.missions,
+      onClaim: () => this.refreshTopBars()
+    });
+    this.collectionOverlay = new CollectionOverlay(this, { gs: this.gs });
+    this.settingsOverlay = new SettingsOverlay(this, {
+      gs: this.gs,
+      dayInfo: () => this.dayInfo(),
+      onToggleEffects: (on) => this.onToggleEffects(on)
+    });
+    this.modeOverlay = new ModeOverlay(this, { onSelect: (m) => this.startMode(m) });
+    this.resultOverlay = new ResultOverlay(this, { onContinue: () => this.endChallenge() });
+  }
+
+  // ===========================================================================
+  // Economy: shop + inventory
+  // ===========================================================================
+  isItemOwned(item) {
+    if (item.effect && item.effect.type === 'recipe') return this.gs.hasRecipe(item.effect.recipeId);
+    return this.gs.hasUpgrade(item.id) || this.gs.hasDecoration(item.id);
+  }
+
+  /** Buy any shop item with full guards; apply its real effect. Returns bool. */
+  buyShopItem(item) {
+    if (this.isItemOwned(item)) return false;
+    if (item.requiresReputation && this.gs.reputation < item.requiresReputation) return false;
+
+    const eff = item.effect || {};
+    let ok = false;
+    if (eff.type === 'recipe') {
+      ok = this.gs.buyRecipe(eff.recipeId, item.price);
+    } else if (item.category === 'dekorasi' || eff.type === 'ambient' || eff.type === 'wallDecor' || eff.type === 'repaint') {
+      ok = this.gs.buyDecoration(item.id, item.price);
+    } else {
+      ok = this.gs.buyUpgrade(item.id, item.price);
+    }
+    if (ok) {
+      this.applyEffect(item);
+      this.refreshTopBars();
+    }
+    return ok;
+  }
+
+  restock(ing) {
+    if (!this.gs.canAfford(ing.price)) return false;
+    if (!this.gs.spend(ing.price)) return false;
+    this.gs.addStock(ing.id, ing.restock);
+    return true;
+  }
+
+  // ===========================================================================
+  // Applying upgrade effects to the world (real, visible changes)
+  // ===========================================================================
+  applyOwnedUpgrades() {
+    // Equipment / cook speed
+    this.cookSpeedMult = 1;
+    this.toleranceBonus = 0;
+    this.extraPatience = 0;
+    this.attractiveness = 0;
+    this.stoveLevel = 1;
+
+    // Legacy "stove" preserved via migration -> upgraded chrome stove.
+    if (this.gs.hasUpgrade('stove')) this.setStoveUpgraded(true);
+    if (this.gs.hasUpgrade('ketel')) this.cookSpeedMult *= 0.85;
+    if (this.gs.hasUpgrade('penggorengan')) this.toleranceBonus += 0.06;
+    if (this.gs.hasUpgrade('kursi_empuk')) this.extraPatience += 6;
+
+    // Decorations -> attractiveness + visuals
+    if (this.gs.hasDecoration('lampu_hangat')) { this.attractiveness += 3; this.addWarmGlow(); }
+    if (this.gs.hasDecoration('poster')) { this.attractiveness += 2; this.addWallDecor('🖼️', 560); }
+    if (this.gs.hasDecoration('jam_dinding')) { this.attractiveness += 2; this.addWallDecor('🕐', 720); }
+    if (this.gs.hasDecoration('cat_dinding')) { this.attractiveness += 5; this.repaintWall(); }
+  }
+
+  applyEffect(item) {
+    const eff = item.effect || {};
+    switch (eff.type) {
+      case 'stoveSkin': this.setStoveUpgraded(false); break;
+      case 'cookSpeed': this.cookSpeedMult *= (eff.speedMult || 1); break;
+      case 'friedEasier': this.toleranceBonus += (eff.toleranceBonus || 0); break;
+      case 'patienceBonus': this.extraPatience += (eff.seconds || 0); break;
+      case 'ambient': this.attractiveness += (eff.attract || 0); this.addWarmGlow(); break;
+      case 'wallDecor': this.attractiveness += (eff.attract || 0); this.addWallDecor(item.icon, item.id === 'jam_dinding' ? 720 : 560); break;
+      case 'repaint': this.attractiveness += (eff.attract || 0); this.repaintWall(); break;
+      case 'capacity': this.addSeat(); break;
+      case 'recipe': /* unlocked in state; nothing visual */ break;
+      default: break;
+    }
+    if (item.name) this.hud.setStatus(`${item.name} dipasang! ✨`, '🔧');
+  }
+
+  setStoveUpgraded(silent) {
+    if (this.stoveLevel >= 2 || !this.stoveSprite) return;
+    this.stoveLevel = 2;
+    this.cookSpeedMult *= 0.85; // kompor premium also cooks faster
+    this.stoveSprite.setTexture('stove2');
+    if (silent || this.gs.settings.reduceEffects) return;
+    const b = this.stoveSprite.getBounds();
+    const flash = this.add.rectangle(b.centerX, b.centerY, b.width + 10, b.height + 10, 0xffffff, 0.6).setDepth(30);
+    this.tweens.add({ targets: flash, alpha: 0, duration: 400, onComplete: () => flash.destroy() });
+    for (let i = 0; i < 8; i++) {
+      const spark = this.add.text(b.centerX + Phaser.Math.Between(-60, 60), b.centerY + Phaser.Math.Between(-40, 40), '✨', {
+        fontFamily: 'Segoe UI Emoji, sans-serif', fontSize: '20px'
+      }).setDepth(31);
+      this.tweens.add({ targets: spark, y: spark.y - 40, alpha: 0, duration: 700 + i * 40, onComplete: () => spark.destroy() });
+    }
+  }
+
+  addWarmGlow() {
+    if (this._warmGlow) return;
+    this._warmGlow = this.add.graphics().setDepth(2);
+    this._warmGlow.fillStyle(0xffcf8a, 0.12);
+    this._warmGlow.fillRect(0, 0, GAME_WIDTH, 430);
+  }
+
+  addWallDecor(emoji, x) {
+    this.add.text(x, 200, emoji, { fontFamily: 'Segoe UI Emoji', fontSize: '46px' }).setOrigin(0.5).setDepth(2);
+  }
+
+  repaintWall() {
+    if (this._repaint) return;
+    this._repaint = this.add.graphics().setDepth(1);
+    this._repaint.fillStyle(0x8a6a4a, 0.22);
+    this._repaint.fillRect(0, 0, GAME_WIDTH, 430);
+  }
+
+  addSeat() {
+    // Visual: an extra chair near the dining area; also raises capacity flag.
+    this.extraSeats = (this.extraSeats || 0) + 1;
+    const x = 760 + this.extraSeats * 60;
+    if (this.textures.exists('chair')) {
+      this.add.image(x, 640, 'chair').setOrigin(0.5, 1).setDepth(Math.floor(640 / 10) - 1);
+    }
+  }
+
+  onToggleEffects(on) {
+    // Reducing effects: stop ambient tweens if present (steam/sparkle are
+    // one-shot; this mainly affects future spawns and the cooking scene).
+    this.reduceEffects = on;
+  }
+
+  // ===========================================================================
+  // Time + weather reactions
+  // ===========================================================================
+  onPhaseChange(phaseId) {
+    this.refreshTopBars();
+    this.applyPhaseTint(phaseId);
+  }
+
+  onWeatherChange() {
+    this.refreshTopBars();
+  }
+
+  applyPhaseTint(phaseId) {
+    const phase = this.timeWeather.phase;
+    if (!this._phaseOverlay) {
+      this._phaseOverlay = this.add.graphics().setDepth(900);
+    }
+    this._phaseOverlay.clear();
+    // Night/dusk get a cool overlay; morning a warm one; siang none.
+    const map = {
+      pagi: { color: 0xffe3b0, alpha: 0.08 },
+      siang: { color: 0xffffff, alpha: 0.0 },
+      sore: { color: 0xff9a5a, alpha: 0.10 },
+      malam: { color: 0x24306a, alpha: 0.22 }
+    };
+    const m = map[phaseId] || map.siang;
+    if (m.alpha > 0) {
+      this._phaseOverlay.fillStyle(m.color, m.alpha);
+      this._phaseOverlay.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    }
+  }
+
+  // ===========================================================================
+  // Service loop (now: arrive -> order dialogue -> COOK mini-game -> serve ->
+  // reaction + pay/tip + reputation -> leave -> next). Patience runs while the
+  // customer waits during ordering/cooking.
+  // ===========================================================================
+  spawnCustomer(archetype) {
     const cust = new Character(this, {
-      x: GAME_WIDTH + 80,
-      y: 600,
-      scale: 1.0,
-      facing: -1,
-      ...look
+      x: GAME_WIDTH + 80, y: 600, scale: 1.0, facing: -1, ...archetype.look
     });
     cust.setDepth(60);
     return cust;
   }
 
   startCycle() {
+    if (this.phase !== 'idle') return;
     this.phase = 'arriving';
-    this.currentOrder = randomOrder();
-    this.customer = this.spawnCustomer();
-    this.hud.setStatus('Pelanggan datang...', '🚶');
-    this.customerArrives();
-  }
 
-  customerArrives() {
+    // Choose a time-appropriate archetype and an order they'd want.
+    this.currentArchetype = pickArchetypeForTime(this.timeWeather.phase.id);
+    const isUnlocked = (id) => this.gs.hasRecipe(id);
+    let orderId = pickOrderFor(this.currentArchetype, isUnlocked);
+    orderId = this.timeWeather.biasOrder(orderId, isUnlocked);
+    this.currentRecipeId = orderId;
+    this.currentOrder = getRecipe(orderId);
+
+    this.customer = this.spawnCustomer(this.currentArchetype);
+    this.patienceMax = this.currentArchetype.patience + this.extraPatience + Math.round(this.attractiveness * 0.5);
+    this.patience = this.patienceMax;
+    this.patienceActive = false;
+
+    this.hud.setStatus(`${this.currentArchetype.emoji} ${this.currentArchetype.name} datang...`, '🚶');
     this.tweens.add({
       targets: this.customer,
       x: this.cashierPos.x + 190,
-      duration: 1800,
+      duration: 1700,
       ease: 'Sine.inOut',
       onComplete: () => this.startConversation()
     });
@@ -492,163 +797,289 @@ export default class WarkopScene extends Phaser.Scene {
 
   startConversation() {
     this.phase = 'ordering';
-    const lines = buildOrderDialogue(this.currentOrder, this.employee, this.customer);
-    this.dialogue.start(lines, () => this.phasePrepare());
+    this.patienceActive = true; // patience ticks while they wait
+    const lines = buildGreeting(this.currentArchetype, this.currentOrder, this.employee, this.customer);
+    this.dialogue.start(lines, () => this.phaseCook());
   }
 
-  /** Phase 1: player presses a button to prepare the order. */
-  phasePrepare() {
-    this.phase = 'preparing';
-    const o = this.currentOrder;
-    this.hud.setStatus(`Pesanan: ${o.name}  —  siapkan pesanan`, o.icon);
-    this.hud.showButton('🍳 Siapkan Pesanan', () => this.doPrepare());
+  phaseCook() {
+    this.phase = 'cooking';
+    const recipe = this.currentOrder;
+
+    // Check ingredients first — if out of stock, player must restock.
+    if (!this.gs.hasIngredients(recipe.ingredients)) {
+      this.hud.setStatus('Bahan habis! Buka 📦 Stok untuk membeli.', '⚠️');
+      this.hud.showButton('📦 Buka Stok', () => { this.hud.hideButton(); this.inventoryOverlay.open(); this.offerCookWhenReady(); });
+      return;
+    }
+    this.launchCooking();
   }
 
-  doPrepare() {
-    const o = this.currentOrder;
-    this.hud.hideButton();
-    this.hud.setStatus(`${o.prep}...`, '⏳');
-    // Steam/flame already animate near the kitchen; show a short "cooking" wait.
-    this.employee.talkBounce();
-    this.time.delayedCall(1500, () => this.phaseServe());
+  offerCookWhenReady() {
+    // After the player closes inventory, let them try cooking again.
+    const check = () => {
+      if (this.gs.hasIngredients(this.currentOrder.ingredients)) {
+        this.hud.setStatus('Bahan siap! Mulai memasak.', '✅');
+        this.hud.showButton('🍳 Mulai Masak', () => { this.hud.hideButton(); this.launchCooking(); });
+      } else {
+        this.hud.showButton('📦 Buka Stok', () => { this.hud.hideButton(); this.inventoryOverlay.open(); this.time.delayedCall(300, check); });
+      }
+    };
+    this.time.delayedCall(300, check);
   }
 
-  /** Phase 2: order is ready; player presses to serve it to the customer. */
+  launchCooking() {
+    const recipe = this.currentOrder;
+    // Consume ingredients now (committed to the dish).
+    this.gs.consume(recipe.ingredients);
+    this.patienceActive = true; // still waiting while you cook
+
+    this.hud.setStatus(`${this.currentArchetype.name} menunggu — masak ${recipe.name}!`, recipe.icon);
+    this.setToolbarVisible(false);
+
+    this.scene.launch('CookingScene', {
+      recipe,
+      speedMult: this.cookSpeedMult,
+      toleranceBonus: this.toleranceBonus,
+      reduceEffects: !!this.gs.settings.reduceEffects,
+      onDone: (result) => {
+        this.cooked = result;
+        this.setToolbarVisible(true);
+        this.phaseServe();
+      }
+    });
+  }
+
   phaseServe() {
     this.phase = 'serving';
-    const o = this.currentOrder;
-    this.hud.setStatus(`${o.name} siap! Sajikan ke pelanggan.`, '✅');
+    this.hud.setStatus('Sajikan pesanannya!', '🧋');
     this.hud.showButton('🧋 Sajikan', () => this.doServe());
   }
 
   doServe() {
     this.hud.hideButton();
     this.phase = 'paying';
+    this.patienceActive = false;
 
-    // A little serving dish flies from the counter to the customer.
-    const o = this.currentOrder;
-    const dish = this.add.text(this.cashierPos.x, this.cashierPos.y - 40, o.icon, {
-      fontFamily: 'Segoe UI Emoji, sans-serif',
-      fontSize: '34px'
+    const dish = this.add.text(this.cashierPos.x, this.cashierPos.y - 40, this.currentOrder.icon, {
+      fontFamily: 'Segoe UI Emoji, sans-serif', fontSize: '34px'
     }).setOrigin(0.5).setDepth(70);
-
     this.tweens.add({
-      targets: dish,
-      x: this.customer.x,
-      y: this.customer.y - 70,
-      duration: 700,
-      ease: 'Sine.inOut',
-      onComplete: () => {
-        dish.destroy();
-        this.customer.talkBounce();
-        this.payment();
-      }
+      targets: dish, x: this.customer.x, y: this.customer.y - 70, duration: 650, ease: 'Sine.inOut',
+      onComplete: () => { dish.destroy(); this.customer.talkBounce(); this.resolveServe(); }
     });
   }
 
-  payment() {
-    this.hud.setStatus('Pelanggan membayar...', '💰');
-    const lines = buildPaymentDialogue(this.currentOrder, this.employee, this.customer);
-    this.dialogue.start(lines, () => this.collectPayment());
+  /** Combine cook quality + patience into an outcome; pay, tip, reputation. */
+  resolveServe() {
+    const recipe = this.currentOrder;
+    const quality = this.cooked ? this.cooked.quality : qualityFromScore(0.5);
+
+    // Patience factor: if they waited well, happier; if nearly out, less tip.
+    const patienceFrac = Phaser.Math.Clamp(this.patience / this.patienceMax, 0, 1);
+    const happy = quality.stars >= 2 && patienceFrac > 0.15;
+
+    // Payment = base price (only if not a failure) + tip.
+    let payment = quality.stars >= 1 ? recipe.price : Math.ceil(recipe.price * 0.3);
+    let tip = 0;
+    if (happy) {
+      tip = Math.round(this.currentArchetype.tipBase * quality.tipMult * (0.6 + patienceFrac));
+    }
+    payment += tip;
+
+    // Reputation: quality delta + patience bonus/penalty + attractiveness.
+    let repDelta = quality.repDelta + (patienceFrac > 0.5 ? 1 : patienceFrac < 0.15 ? -2 : 0);
+    this.gs.addReputation(repDelta);
+
+    // Pay out.
+    this.gs.addCoins(payment);
+    this.hud.floatCoinGain(payment);
+
+    // Stats + missions + collection + secret unlocks.
+    this.gs.recordServe(this.currentRecipeId, this.currentArchetype.id, quality.perfect);
+    this.missions.onServe({ menuId: this.currentRecipeId, archetypeId: this.currentArchetype.id, perfect: quality.perfect });
+    this.maybeUnlockSecret();
+    this.checkReputationCollectible();
+
+    // Reaction dialogue.
+    const outcome = { happy, tip, payment, quality };
+    const lines = buildReaction(this.currentArchetype, recipe, outcome, this.employee, this.customer);
+    this.hud.setStatus(happy ? `Pelanggan puas! +${payment} 🪙 (tip ${tip})` : `Hmm, kurang puas. +${payment} 🪙`, happy ? '😊' : '😕');
+    this.dialogue.start(lines, () => this.customerLeaves(happy));
+
+    if (this.inChallengeMode()) this.challenge.served += 1;
   }
 
-  collectPayment() {
-    const o = this.currentOrder;
-    this.coins += o.price;
-    this.hud.setCoins(this.coins);
-    this.hud.floatCoinGain(o.price);
-    this.hud.setStatus(`+${o.price} koin! Terima kasih 😊`, '🪙');
-    this.persist(); // save coins after each sale
-    this.customerLeaves();
-  }
-
-  /** Save current progress (coins + purchased upgrades) to localStorage. */
-  persist() {
-    saveProgress({ coins: this.coins, purchased: this.purchased });
-  }
-
-  customerLeaves() {
-    this.phase = 'leaving';
-    const cust = this.customer;
-    cust.setFacing(1);
-    this.tweens.add({
-      targets: cust,
-      x: GAME_WIDTH + 120,
-      duration: 1700,
-      ease: 'Sine.in',
-      onComplete: () => {
-        cust.destroy();
-        if (this.customer === cust) this.customer = null;
-        // Short beat, then the next customer arrives — the loop continues.
-        this.phase = 'idle';
-        this.hud.setStatus('Menunggu pelanggan...', '🙂');
-        this.time.delayedCall(1100, () => this.startCycle());
-      }
-    });
-  }
-
-  // ===========================================================================
-  // Upgrades
-  // ===========================================================================
-
-  /**
-   * Attempt to buy an upgrade. Returns true on success. Guards affordability
-   * and double-purchase here too (the panel also guards, but the scene is the
-   * source of truth for coins).
-   */
-  buyUpgrade(item) {
-    if (this.purchased[item.id]) return false;
-    if (this.coins < item.price) return false;
-
-    this.coins -= item.price;
-    this.hud.setCoins(this.coins);
-    this.purchased[item.id] = true;
-
-    if (item.id === 'stove') this.applyStoveUpgrade();
-
-    this.persist(); // save coins + purchased upgrade
-    this.hud.setStatus(`${item.name} terpasang! 🔧`, '✨');
-    return true;
-  }
-
-  /**
-   * Swap the stove to its upgraded look. When `silent` is true (e.g. applying
-   * a loaded save on startup), skip the flash/sparkle effects.
-   */
-  applyStoveUpgrade(silent = false) {
-    if (this.stoveLevel >= 2) return;
-    this.stoveLevel = 2;
-    this.stoveSprite.setTexture('stove2');
-    if (silent) return;
-
-    // brief flash to sell the change
-    const b = this.stoveSprite.getBounds();
-    const flash = this.add.rectangle(b.centerX, b.centerY, b.width + 10, b.height + 10, 0xffffff, 0.6)
-      .setDepth(30);
-    this.tweens.add({ targets: flash, alpha: 0, duration: 400, onComplete: () => flash.destroy() });
-
-    for (let i = 0; i < 8; i++) {
-      const spark = this.add.text(b.centerX + Phaser.Math.Between(-60, 60), b.centerY + Phaser.Math.Between(-40, 40), '✨', {
-        fontFamily: 'Segoe UI Emoji, sans-serif', fontSize: '20px'
-      }).setDepth(31);
-      this.tweens.add({
-        targets: spark,
-        y: spark.y - 40,
-        alpha: 0,
-        duration: 700 + i * 40,
-        onComplete: () => spark.destroy()
-      });
+  /** Serving a customer's favorite repeatedly can unlock their secret recipe. */
+  maybeUnlockSecret() {
+    const a = this.currentArchetype;
+    if (!a.secretRecipe) return;
+    if (this.gs.hasRecipe(a.secretRecipe)) return;
+    const count = this.gs.s.stats.byCustomer[a.id] || 0;
+    if (count >= 3) {
+      this.gs.unlockRecipe(a.secretRecipe);
+      const r = getRecipe(a.secretRecipe);
+      this.toast(`Resep rahasia terbuka: ${r.icon} ${r.name}!`, UITEXT.good);
     }
   }
 
-  showTitleBanner() {
-    const sub = this.add.text(GAME_WIDTH / 2, 132, 'Simulasi Warung Kopi', {
-      fontFamily: 'Trebuchet MS, Segoe UI, sans-serif',
-      fontSize: '22px',
-      color: '#f3d9a8'
-    }).setOrigin(0.5).setDepth(900).setAlpha(0);
+  checkReputationCollectible() {
+    if (this.gs.reputation >= 100 && !this.gs.hasCollected('items', 'bintang_warkop')) {
+      this.gs.collect('items', 'bintang_warkop');
+      this.toast('Koleksi: ⭐ Bintang Warkop!', UITEXT.star);
+    }
+  }
 
-    this.tweens.add({ targets: sub, alpha: 1, duration: 500, yoyo: true, hold: 1600, onComplete: () => sub.destroy() });
+  customerLeaves(happy) {
+    this.phase = 'leaving';
+    const cust = this.customer;
+    cust.setFacing(1);
+    if (!this.gs.settings.reduceEffects) {
+      this.add.text(cust.x, cust.y - 120, happy ? '❤️' : '💢', { fontFamily: 'Segoe UI Emoji', fontSize: '28px' })
+        .setOrigin(0.5).setDepth(70);
+    }
+    this.tweens.add({
+      targets: cust, x: GAME_WIDTH + 120, duration: 1500, ease: 'Sine.in',
+      onComplete: () => {
+        cust.destroy();
+        if (this.customer === cust) this.customer = null;
+        this.phase = 'idle';
+        this.cooked = null;
+        if (this.inChallengeMode()) {
+          this.hud.setStatus(`Tantangan: ${this.challenge.served}/${this.challenge.target}`, '⏱️');
+          this.time.delayedCall(500, () => this.startCycle());
+        } else {
+          this.hud.setStatus('Menunggu pelanggan...', '🙂');
+          const delay = Math.max(500, this.spawnDelayBase / this.timeWeather.spawnMultiplier);
+          this.time.delayedCall(delay, () => this.startCycle());
+        }
+      }
+    });
+  }
+
+  /** Customer gives up and leaves if patience runs out before being served. */
+  giveUpAndLeave() {
+    if (this.phase === 'leaving' || this.phase === 'idle') return;
+    // close cooking if running
+    if (this.scene.isActive('CookingScene')) { this.scene.stop('CookingScene'); this.setToolbarVisible(true); }
+    this.hud.hideButton();
+    this.gs.addReputation(-3);
+    this.hud.setStatus('Pelanggan pergi karena menunggu terlalu lama 😣', '💢');
+    this.phase = 'leaving';
+    const cust = this.customer;
+    if (!cust) { this.phase = 'idle'; this.time.delayedCall(800, () => this.startCycle()); return; }
+    cust.setFacing(1);
+    this.tweens.add({
+      targets: cust, x: GAME_WIDTH + 120, duration: 1200, ease: 'Sine.in',
+      onComplete: () => {
+        cust.destroy();
+        if (this.customer === cust) this.customer = null;
+        this.phase = 'idle';
+        if (this.inChallengeMode()) this.time.delayedCall(400, () => this.startCycle());
+        else this.time.delayedCall(900, () => this.startCycle());
+      }
+    });
+  }
+
+  updatePatience(delta) {
+    if (!this.patienceActive || this.phase === 'leaving') return;
+    // Patience doesn't drain while the cooking modal is open (fair to player).
+    if (this.scene.isActive('CookingScene')) return;
+    this.patience -= delta / 1000;
+    if (this.patience <= 0) {
+      this.patience = 0;
+      this.patienceActive = false;
+      this.giveUpAndLeave();
+      return;
+    }
+    this.updatePatienceBar();
+  }
+
+  updatePatienceBar() {
+    if (!this.customer) return;
+    if (!this._patienceG) this._patienceG = this.add.graphics().setDepth(80);
+    const g = this._patienceG;
+    g.clear();
+    const frac = Phaser.Math.Clamp(this.patience / this.patienceMax, 0, 1);
+    const w = 70, h = 9;
+    const x = this.customer.x - w / 2;
+    const y = this.customer.y - 150;
+    g.fillStyle(0x000000, 0.6); g.fillRoundedRect(x - 2, y - 2, w + 4, h + 4, 4);
+    const col = frac > 0.5 ? 0x4fcf6a : frac > 0.2 ? 0xf2c14e : 0xe25a4e;
+    g.fillStyle(col, 1); g.fillRoundedRect(x, y, w * frac, h, 4);
+  }
+
+  // ===========================================================================
+  // Game modes
+  // ===========================================================================
+  inChallengeMode() { return this.mode === 'tantangan' && !!this.challenge; }
+
+  startMode(modeId) {
+    // Reset any in-flight customer/cooking.
+    if (this.scene.isActive('CookingScene')) this.scene.stop('CookingScene');
+    this.setToolbarVisible(true);
+    this.hud.hideButton();
+    if (this.customer) { this.customer.destroy(); this.customer = null; }
+
+    if (modeId === 'tantangan') {
+      this.mode = 'tantangan';
+      this.gs.enterChallenge({ coins: this.gs.coins }); // sandbox: generous stock, no persist
+      this.challenge = { target: 6, served: 0, endsAt: this.time.now + 90000, rewarded: 25 };
+      this.hud.setStatus('Tantangan dimulai! 90 detik.', '⏱️');
+      this.phase = 'idle';
+      this.time.delayedCall(700, () => this.startCycle());
+    } else {
+      this.mode = 'harian';
+      this.phase = 'idle';
+      this.hud.setStatus('Mode Harian. Selamat berjualan!', '🏠');
+      this.time.delayedCall(700, () => this.startCycle());
+    }
+  }
+
+  updateChallenge() {
+    if (!this.inChallengeMode()) return;
+    const left = Math.max(0, this.challenge.endsAt - this.time.now);
+    if (this._challengeLabel) {
+      this._challengeLabel.setText(`⏱️ ${(left / 1000).toFixed(0)}s   🧑 ${this.challenge.served}/${this.challenge.target}`);
+    } else {
+      this._challengeLabel = label(this, GAME_WIDTH / 2, 120, '', { size: 18, bold: true, color: UITEXT.accent, origin: [0.5, 0.5] }).setDepth(956);
+    }
+    if (left <= 0) this.finishChallenge();
+  }
+
+  finishChallenge() {
+    if (!this.challenge) return;
+    const success = this.challenge.served >= this.challenge.target;
+    const reward = success ? this.challenge.rewarded : 0;
+    const summary = { target: this.challenge.target, served: this.challenge.served, success, reward };
+    // stop everything cleanly
+    if (this.scene.isActive('CookingScene')) this.scene.stop('CookingScene');
+    this.setToolbarVisible(true);
+    if (this.customer) { this.customer.destroy(); this.customer = null; }
+    if (this._challengeLabel) { this._challengeLabel.destroy(); this._challengeLabel = null; }
+    this.phase = 'idle';
+    this._pendingReward = reward;
+    this.resultOverlay.open(summary);
+  }
+
+  endChallenge() {
+    // Leave sandbox; grant reward to the REAL save (challenge never persisted).
+    this.gs.exitChallenge(this._pendingReward || 0);
+    this._pendingReward = 0;
+    this.challenge = null;
+    this.mode = 'harian';
+    this.hud.setCoins(this.gs.coins);
+    this.refreshTopBars();
+    this.hud.setStatus('Kembali ke Mode Harian.', '🏠');
+    this.phase = 'idle';
+    this.time.delayedCall(700, () => this.startCycle());
+  }
+
+  // ===========================================================================
+  toast(msg, color) {
+    const t = label(this, GAME_WIDTH / 2, 170, msg, { size: 20, bold: true, color: color || UITEXT.light, origin: [0.5, 0.5] });
+    t.setDepth(980).setAlpha(0);
+    this.tweens.add({ targets: t, alpha: 1, y: 160, duration: 300, yoyo: true, hold: 1800, onComplete: () => t.destroy() });
   }
 }
 
