@@ -162,8 +162,13 @@ async function handleNpc(req, res) {
     contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
     generationConfig: {
       temperature: 0.9,
-      maxOutputTokens: 60,
-      topP: 0.95
+      topP: 0.95,
+      // Gemini 3.x Flash is a "thinking" model: thinking tokens count against
+      // maxOutputTokens. Keep thinking minimal and give enough headroom so the
+      // visible sentence isn't starved (a too-small cap yields MAX_TOKENS +
+      // empty text). Output is still kept short by the prompt + char cap below.
+      maxOutputTokens: 512,
+      thinkingConfig: { thinkingLevel: 'low' }
     },
     safetySettings: [
       { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
