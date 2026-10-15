@@ -83,6 +83,19 @@ function clientIp(req) {
 }
 
 export default async function handler(req, res) {
+  // Top-level safety net: any unexpected throw still returns clean JSON instead
+  // of a platform 502 with an empty body.
+  try {
+    return await handleNpc(req, res);
+  } catch (err) {
+    console.error('[api/npc] unhandled error:', err && err.message ? err.message : err);
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'Kesalahan server tak terduga.' });
+    }
+  }
+}
+
+async function handleNpc(req, res) {
   // 1) Method guard
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
