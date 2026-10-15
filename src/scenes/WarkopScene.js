@@ -8,6 +8,7 @@ import PixelArt from '../engine/PixelArt.js';
 import GameState from '../systems/GameState.js';
 import TimeWeather from '../systems/TimeWeather.js';
 import MissionSystem from '../systems/MissionSystem.js';
+import NpcChatter from '../systems/NpcChatter.js';
 
 import { getRecipe, qualityFromScore } from '../data/recipes.js';
 import { ARCHETYPES, pickArchetypeForTime, pick } from '../data/customers.js';
@@ -45,6 +46,7 @@ export default class WarkopScene extends Phaser.Scene {
     this.gs = new GameState();                 // persistent progress (v2 + migrated v1)
     this.timeWeather = new TimeWeather(this);  // simulated clock + weather
     this.missions = new MissionSystem(this.gs);
+    this.npcChatter = new NpcChatter();        // optional Gemini chatter (rate-limited)
 
     // --- World ---
     this.buildTextures();
@@ -785,6 +787,22 @@ export default class WarkopScene extends Phaser.Scene {
     this.patience = this.patienceMax;
     this.patienceActive = false;
 
+    // Kick off an OPTIONAL AI chatter request now (non-blocking), so it may be
+    // ready by the time the greeting dialogue starts. Rate-limited internally;
+    // on any failure/cooldown this stays null and we use the local dialogue.
+    this.pendingChatter = null;
+    if (this.npcChatter.canRequest()) {
+      const forCustomer = this.currentArchetype.id;
+      const forOrder = this.currentRecipeId;
+      this.npcChatter.fetchLine(forCustomer, forOrder).then((line) => {
+        // Only keep it if it's still the same customer/order waiting to order.
+        if (line && this.currentArchetype && this.currentArchetype.id === forCustomer
+            && this.currentRecipeId === forOrder) {
+          this.pendingChatter = line;
+        }
+      });
+    }
+
     this.hud.setStatus(`${this.currentArchetype.emoji} ${this.currentArchetype.name} datang...`, '🚶');
     this.tweens.add({
       targets: this.customer,
@@ -798,7 +816,26 @@ export default class WarkopScene extends Phaser.Scene {
   startConversation() {
     this.phase = 'ordering';
     this.patienceActive = true; // patience ticks while they wait
+
+    // The order + the existing (fixed) greeting are unchanged. If an AI chatter
+    // line arrived in time, we ADD it as one extra customer line for flavor —
+    // it never replaces the order line or changes any game logic.
     const lines = buildGreeting(this.currentArchetype, this.currentOrder, this.employee, this.customer);
+    if (this.pendingChatter) {
+      const cust = this.customer;
+      const extra = {
+        speaker: this.currentArchetype.name,
+        color: COLORS.blue,
+        text: this.pendingChatter,
+        onShow: () => cust && cust.talkBounce()
+      };
+      // Insert after the first customer line (index 1) so it reads naturally,
+      // keeping the confirming order line last.
+      const insertAt = Math.min(2, lines.length);
+      lines.splice(insertAt, 0, extra);
+    }
+    this.pendingChatter = null;
+
     this.dialogue.start(lines, () => this.phaseCook());
   }
 

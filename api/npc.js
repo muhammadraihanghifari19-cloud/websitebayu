@@ -208,9 +208,24 @@ async function handleNpc(req, res) {
       const errJson = await apiResp.json();
       detail = errJson?.error?.message || '';
     } catch { /* ignore parse issues */ }
-    res.status(502).json({
+
+    const upstream = apiResp.status;
+    // Map transient/quota upstream statuses to the SAME client status so the
+    // frontend can react correctly (429 quota must NOT be disguised as 502).
+    let clientStatus = 502;
+    let message = `Gemini API error (${upstream}).`;
+    if (upstream === 429) {
+      clientStatus = 429;
+      message = 'Kuota Gemini terlampaui. Coba lagi nanti.';
+    } else if (upstream === 503) {
+      clientStatus = 503;
+      message = 'Model Gemini sedang sibuk. Coba lagi nanti.';
+    }
+
+    res.status(clientStatus).json({
       ok: false,
-      error: `Gemini API error (${apiResp.status}).`,
+      error: message,
+      upstreamStatus: upstream,
       detail: detail ? String(detail).slice(0, 200) : undefined
     });
     return;
