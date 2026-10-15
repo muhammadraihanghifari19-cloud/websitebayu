@@ -53,7 +53,9 @@ const ORDER_NAMES = {
   teh_jahe: 'Teh Jahe'
 };
 
-const MODEL = 'gemini-2.5-flash';
+// Current GA Flash model on the generativelanguage v1beta API (gemini-2.5-flash
+// was retired for new API keys; Google directs new users to gemini-3.8-flash).
+const MODEL = 'gemini-3.8-flash';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 const MAX_OUTPUT_CHARS = 180;
 const REQUEST_TIMEOUT_MS = 9000;
